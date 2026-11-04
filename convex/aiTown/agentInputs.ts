@@ -6,6 +6,7 @@ import { movePlayer } from './movement';
 import { inputHandler } from './inputHandler';
 import { point } from '../util/types';
 import { Descriptions } from '../../data/characters';
+import { DEV_EVENT_BADGE_MS, devEventReaction } from '../../data/devEvents';
 import { AgentDescription } from './agentDescription';
 import { Agent } from './agent';
 
@@ -150,6 +151,35 @@ export const agentInputs = {
         }),
       );
       return { agentId };
+    },
+  }),
+  // A real development event (convex/devEvents.ts): put up reaction badges and
+  // have the designated character confront someone about it right away.
+  devEvent: inputHandler({
+    args: { type: v.string() },
+    handler: (game, now, args) => {
+      const reaction = devEventReaction(args.type);
+      const byName = (name: string) => {
+        const description = [...game.playerDescriptions.values()].find((d) => d.name === name);
+        return description && game.world.players.get(description.playerId);
+      };
+      const inConversation = (player: Player) => !!game.world.playerConversation(player);
+      for (const [name, badge] of Object.entries(reaction.badges)) {
+        const player = byName(name);
+        if (!player || inConversation(player)) continue;
+        // Stop walking, otherwise the agent loop clears the badge straight away.
+        delete player.pathfinding;
+        player.activity = { ...badge, until: now + DEV_EVENT_BADGE_MS };
+      }
+      if (reaction.confront) {
+        const [initiator, target] = reaction.confront.map(byName);
+        if (initiator && target && !inConversation(initiator) && !inConversation(target)) {
+          Conversation.start(game, now, initiator, target);
+          const agent = [...game.world.agents.values()].find((a) => a.playerId === initiator.id);
+          if (agent) agent.lastInviteAttempt = now;
+        }
+      }
+      return null;
     },
   }),
 };

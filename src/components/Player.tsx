@@ -1,6 +1,6 @@
 import { Character } from './Character.tsx';
 import { orientationDegrees } from '../../convex/util/geometry.ts';
-import { characters } from '../../data/characters.ts';
+import { characters, currentTask } from '../../data/characters.ts';
 import { toast } from 'react-toastify';
 import { Player as ServerPlayer } from '../../convex/aiTown/player.ts';
 import { GameId } from '../../convex/aiTown/ids.ts';
@@ -74,9 +74,11 @@ export const Player = ({
         isThinking={isThinking}
         isSpeaking={isSpeaking}
         emoji={
-          player.activity && player.activity.until > (historicalTime ?? Date.now())
-            ? player.activity?.emoji
-            : undefined
+          currentTask(
+            game.playerDescriptions.get(player.id)?.name,
+            player.activity,
+            historicalTime ?? Date.now(),
+          )?.emoji
         }
         isViewer={isViewer}
         textureUrl={character.textureUrl}

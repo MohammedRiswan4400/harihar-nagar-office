@@ -137,6 +137,10 @@ export async function chatCompletion(
     model?: CreateChatCompletionRequest['model'];
   },
 ) {
+  if (!body.model && !body.stream) {
+    const gemini = await geminiChatCompletion(body);
+    if (gemini) return gemini;
+  }
   const config = getLLMConfig();
   body.model = body.model ?? config.chatModel;
   const stopWords = body.stop ? (typeof body.stop === 'string' ? [body.stop] : body.stop) : [];
@@ -185,6 +189,62 @@ export async function chatCompletion(
     retries,
     ms,
   };
+}
+
+// Chat completions go to Gemini (OpenAI-compatible endpoint) when GEMINI_API_KEY
+// is set. Embeddings stay on getLLMConfig()'s provider, so EMBEDDING_DIMENSION and
+// the memory vector index don't change. If Gemini fails (it often returns 503
+// under load) we return null and the caller falls back to that provider.
+const GEMINI_CHAT_URL = 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions';
+// Tried in order, one attempt each. All of these accept reasoning_effort "minimal".
+const DEFAULT_GEMINI_MODELS = 'gemini-3.5-flash,gemini-3.5-flash-lite,gemini-flash-lite-latest';
+
+async function geminiChatCompletion(
+  body: Omit<CreateChatCompletionRequest, 'model'>,
+): Promise<{ content: string; retries: number; ms: number } | null> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return null;
+  // Gemini rejects the OpenAI penalty fields, and its thinking tokens count
+  // against max_tokens, so keep thinking minimal and leave headroom.
+  const { frequency_penalty: _fp, presence_penalty: _pp, ...rest } = body;
+  const models = (process.env.GEMINI_CHAT_MODEL ?? DEFAULT_GEMINI_MODELS)
+    .split(',')
+    .map((m) => m.trim())
+    .filter(Boolean);
+  const start = Date.now();
+  for (let attempt = 0; attempt < models.length; attempt++) {
+    const request = {
+      ...rest,
+      model: models[attempt],
+      reasoning_effort: process.env.GEMINI_REASONING_EFFORT ?? 'minimal',
+      max_tokens: Math.max(body.max_tokens ?? 0, 512),
+    };
+    try {
+      const result = await fetch(GEMINI_CHAT_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + apiKey },
+        body: JSON.stringify(request),
+      });
+      if (result.ok) {
+        const json = (await result.json()) as CreateChatCompletionResponse;
+        const content = json.choices[0]?.message?.content;
+        if (content) {
+          console.log(`[gemini ${request.model}]`, content);
+          return { content, retries: attempt, ms: Date.now() - start };
+        }
+        console.warn('Gemini returned no content', JSON.stringify(json).slice(0, 300));
+      } else {
+        console.warn(
+          `Gemini ${request.model} failed with ${result.status}`,
+          (await result.text()).slice(0, 200),
+        );
+      }
+    } catch (e) {
+      console.warn(`Gemini ${request.model} request error`, e);
+    }
+  }
+  console.warn('Gemini unavailable, falling back to', getLLMConfig().provider);
+  return null;
 }
 
 export async function tryPullOllama(model: string, error: string) {

@@ -9,6 +9,7 @@ import { useSendInput } from '../hooks/sendInput';
 import { Player } from '../../convex/aiTown/player';
 import { GameId } from '../../convex/aiTown/ids';
 import { ServerGame } from '../hooks/serverGame';
+import { currentTask } from '../../data/characters';
 
 export default function PlayerDetails({
   worldId,
@@ -47,6 +48,8 @@ export default function PlayerDetails({
   );
 
   const playerDescription = playerId && game.playerDescriptions.get(playerId);
+  const task =
+    player && currentTask(playerDescription?.name, player.activity, Date.now());
 
   const startConversation = useSendInput(engineId, 'startConversation');
   const acceptInvite = useSendInput(engineId, 'acceptInvite');
@@ -214,10 +217,10 @@ export default function PlayerDetails({
           </a>
         </>
       )}
-      {!playerConversation && player.activity && player.activity.until > Date.now() && (
+      {!playerConversation && task && (
         <div className="box flex-grow mt-6">
           <h2 className="bg-brown-700 text-base sm:text-lg text-center">
-            {player.activity.description}
+            {task.emoji} {task.description}
           </h2>
         </div>
       )}

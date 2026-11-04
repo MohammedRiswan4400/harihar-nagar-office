@@ -31,6 +31,7 @@ import type * as aiTown_world from "../aiTown/world.js";
 import type * as aiTown_worldMap from "../aiTown/worldMap.js";
 import type * as constants from "../constants.js";
 import type * as crons from "../crons.js";
+import type * as devEvents from "../devEvents.js";
 import type * as engine_abstractGame from "../engine/abstractGame.js";
 import type * as engine_historicalObject from "../engine/historicalObject.js";
 import type * as http from "../http.js";
@@ -82,6 +83,7 @@ declare const fullApi: ApiFromModules<{
   "aiTown/worldMap": typeof aiTown_worldMap;
   constants: typeof constants;
   crons: typeof crons;
+  devEvents: typeof devEvents;
   "engine/abstractGame": typeof engine_abstractGame;
   "engine/historicalObject": typeof engine_historicalObject;
   http: typeof http;

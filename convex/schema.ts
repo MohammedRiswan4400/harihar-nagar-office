@@ -21,6 +21,14 @@ export default defineSchema({
     .index('conversationId', ['worldId', 'conversationId'])
     .index('messageUuid', ['conversationId', 'messageUuid']),
 
+  // Real development events posted to /dev-event (convex/devEvents.ts).
+  devEvents: defineTable({
+    worldId: v.id('worlds'),
+    type: v.string(),
+    message: v.string(),
+    source: v.string(),
+  }).index('worldId', ['worldId']),
+
   ...agentTables,
   ...aiTownTables,
   ...engineTables,

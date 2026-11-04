@@ -1,6 +1,6 @@
 import { v } from 'convex/values';
 import { internalAction, internalQuery } from '../_generated/server';
-import { ROUTINES } from '../../data/characters';
+import { Point, ROUTINES, Routine } from '../../data/characters';
 import { WorldMap, serializedWorldMap } from './worldMap';
 import { rememberConversation } from '../agent/memory';
 import { GameId, agentId, conversationId, playerId } from './ids';
@@ -117,9 +117,9 @@ export const agentDoSomething = internalAction({
     });
     const routine = name ? ROUTINES[name] : undefined;
     // Decide whether to do an activity or wander somewhere. Characters with a
-    // routine skip activities and keep walking their patrol route.
+    // routine work their task at their stations instead (see data/characters.ts).
     if (!player.pathfinding) {
-      if (routine || recentActivity || justLeftConversation) {
+      if (routine) {
         await sleep(Math.random() * 1000);
         await ctx.runMutation(api.aiTown.main.sendInput, {
           worldId: args.worldId,
@@ -127,9 +127,20 @@ export const agentDoSomething = internalAction({
           args: {
             operationId: args.operationId,
             agentId: agent.id,
-            destination: routine
-              ? routine.patrol[Math.floor(Math.random() * routine.patrol.length)]
-              : wanderDestination(map),
+            ...routineStep(routine, player, Date.now()),
+          },
+        });
+        return;
+      }
+      if (recentActivity || justLeftConversation) {
+        await sleep(Math.random() * 1000);
+        await ctx.runMutation(api.aiTown.main.sendInput, {
+          worldId: args.worldId,
+          name: 'finishDoSomething',
+          args: {
+            operationId: args.operationId,
+            agentId: agent.id,
+            destination: wanderDestination(map),
           },
         });
         return;
@@ -188,6 +199,34 @@ export const playerName = internalQuery({
     return description?.name ?? null;
   },
 });
+
+const samePoint = (a: Point, b: Point) => a.x === b.x && a.y === b.y;
+const pick = <T>(items: T[]) => items[Math.floor(Math.random() * items.length)];
+
+// Next step of a task routine for a player who has stopped moving: start a work
+// stint when they've just arrived at a station, otherwise walk somewhere else.
+function routineStep(
+  routine: Routine,
+  player: { position: Point; activity?: { until: number } },
+  now: number,
+): { destination: Point } | { activity: { description: string; emoji: string; until: number } } {
+  const here = { x: Math.floor(player.position.x), y: Math.floor(player.position.y) };
+  const work = () => {
+    const [min, max] = routine.dwellMs;
+    return { activity: { ...routine.task, until: now + min + Math.random() * (max - min) } };
+  };
+  // An activity that ended moments ago means we just finished a stint here.
+  const justWorked = player.activity !== undefined && now - player.activity.until < 5000;
+  if (routine.stations.some((s) => samePoint(s, here)) && !justWorked) {
+    return work();
+  }
+  const roam = routine.roam.filter((p) => !samePoint(p, here));
+  if (roam.length > 0 && Math.random() < routine.roamChance) {
+    return { destination: pick(roam) };
+  }
+  const stations = routine.stations.filter((s) => !samePoint(s, here));
+  return stations.length > 0 ? { destination: pick(stations) } : work();
+}
 
 function wanderDestination(worldMap: WorldMap) {
   // Wander someonewhere at least one tile away from the edge.
