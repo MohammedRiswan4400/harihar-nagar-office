@@ -7,6 +7,7 @@ import { api, internal } from '../_generated/api';
 import * as embeddingsCache from './embeddingsCache';
 import { GameId, conversationId, playerId } from '../aiTown/ids';
 import { NUM_MEMORIES_TO_SEARCH } from '../constants';
+import { CAST_NAMES } from '../../data/characters';
 
 const selfInternal = internal.agent.conversation;
 
@@ -52,6 +53,7 @@ export async function startConversationMessage(
       `Be sure to include some detail or question about a previous conversation in your greeting.`,
     );
   }
+  prompt.push(...dialogueRules(otherPlayer));
   const lastPrompt = `${player.name} to ${otherPlayer.name}:`;
   const messages: LLMMessage[] = [
     {
@@ -62,19 +64,12 @@ export async function startConversationMessage(
     { role: 'user', content: lastPrompt },
   ];
 
-  const { content } = await chatCompletion({
+  return generateLine(
     messages,
-    max_tokens: 300,
-    stop: stopWords(otherPlayer.name, player.name),
-  });
-  return trimContentPrefx(content, lastPrompt);
-}
-
-function trimContentPrefx(content: string, prompt: string) {
-  if (content.startsWith(prompt)) {
-    return content.slice(prompt.length).trim();
-  }
-  return content;
+    [player.name, otherPlayer.name],
+    stopWords(otherPlayer.name, player.name),
+    [],
+  );
 }
 
 export async function continueConversationMessage(
@@ -110,7 +105,12 @@ export async function continueConversationMessage(
     `Below is the current chat history between you and ${otherPlayer.name}.`,
     `DO NOT greet them again. Do NOT use the word "Hey" too often. Your response should be brief and within 200 characters.`,
   );
+  prompt.push(...dialogueRules(otherPlayer));
 
+  const history = await ctx.runQuery(api.messages.listMessages, {
+    worldId,
+    conversationId: conversation.id as GameId<'conversations'>,
+  });
   const llmMessages: LLMMessage[] = [
     {
       role: 'system',
@@ -128,12 +128,12 @@ export async function continueConversationMessage(
   const lastPrompt = `${player.name} to ${otherPlayer.name}:`;
   llmMessages.push({ role: 'user', content: lastPrompt });
 
-  const { content } = await chatCompletion({
-    messages: llmMessages,
-    max_tokens: 300,
-    stop: stopWords(otherPlayer.name, player.name),
-  });
-  return trimContentPrefx(content, lastPrompt);
+  return generateLine(
+    llmMessages,
+    [player.name, otherPlayer.name],
+    stopWords(otherPlayer.name, player.name),
+    history.map((m) => m.text),
+  );
 }
 
 export async function leaveConversationMessage(
@@ -161,6 +161,7 @@ export async function leaveConversationMessage(
     `Below is the current chat history between you and ${otherPlayer.name}.`,
     `How would you like to tell them that you're leaving? Your response should be brief and within 200 characters.`,
   );
+  prompt.push(...dialogueRules(otherPlayer));
   const llmMessages: LLMMessage[] = [
     {
       role: 'system',
@@ -177,12 +178,166 @@ export async function leaveConversationMessage(
   const lastPrompt = `${player.name} to ${otherPlayer.name}:`;
   llmMessages.push({ role: 'user', content: lastPrompt });
 
-  const { content } = await chatCompletion({
-    messages: llmMessages,
-    max_tokens: 300,
-    stop: stopWords(otherPlayer.name, player.name),
+  return generateLine(
+    llmMessages,
+    [player.name, otherPlayer.name],
+    stopWords(otherPlayer.name, player.name),
+    [],
+  );
+}
+
+// Output rules shared by every conversation prompt. cleanDialogue() enforces the
+// formatting ones again in code because small local models don't always obey.
+function dialogueRules(otherPlayer: { name: string }): string[] {
+  return [
+    `Reply with ONLY the words you say out loud: one or two short, punchy sentences.`,
+    `Never start with a name or "${otherPlayer.name}:" prefix, never wrap the reply in quotation marks, and never write actions or stage directions (nothing in *asterisks*, (brackets) or [brackets]).`,
+    `Never repeat or paraphrase ${otherPlayer.name}'s last line or anything already said in this chat. Every reply must react with a new comeback, joke, question or idea that moves the conversation forward.`,
+    `The only people in this office are ${CAST_NAMES.join(', ')} (plus the unnamed Manager). Only address or mention these people; never invent or use any other name.`,
+    `Never use Tamil words: say "illa", "allallo" or "illaanne", never "illai"; say "entha", never "enna"; say "orupaadu", never "romba"; say "kurachu", never "konjam"; say "unde" or "undallo", never "irukke" or "irukkunno"; say "nokkuthu" or "kaannunnu", never "paaruthu".`,
+  ];
+}
+
+// Tamil words gemma2 keeps slipping into Manglish. A reply containing one is
+// regenerated once; whatever survives the retry is swapped for Malayalam.
+const TAMIL_WORDS: Record<string, string | null> = {
+  illai: 'illa',
+  enna: 'entha',
+  romba: 'orupaadu',
+  ennachu: 'enthaayi',
+  pannungallo: 'cheyyu',
+  iruke: 'undu',
+  sollu: 'paray',
+  paaru: 'nokk',
+  konjam: 'kurachu',
+  irukke: 'unde',
+  irukkunno: 'undallo',
+  paaruthu: 'nokkuthu',
+  // Valid Malayalam too, so only banned in the prompt and retried, never rewritten.
+  illaatha: null,
+  illatha: null,
+};
+
+function tamilWords(text: string) {
+  const words = text.toLowerCase().match(/[a-z]+/g) ?? [];
+  return [...new Set(words.filter((w) => w in TAMIL_WORDS))];
+}
+
+function replaceTamil(text: string) {
+  return text.replace(/[A-Za-z]+/g, (word) => TAMIL_WORDS[word.toLowerCase()] ?? word);
+}
+
+// Capitalised words used like a name (before a comma or another cast name) that
+// are neither cast members nor common Manglish forms of address.
+const NOT_NAMES = new Set(
+  'eda edi ayyo sheri athe ente ningal nee njan ok okay hey aha mone mole chetta chettan sir madam manager bro da di ho oh'.split(
+    ' ',
+  ),
+);
+const castWords = new Set(CAST_NAMES.flatMap((n) => n.toLowerCase().split(' ')));
+function isCastWord(word: string) {
+  const w = word.toLowerCase();
+  return [...castWords].some((c) => w.startsWith(c.slice(0, -1)));
+}
+function unknownNames(text: string) {
+  const castPattern = CAST_NAMES.map((n) => n.split(' ')[0].slice(0, -1)).join('|');
+  const re = new RegExp(`\\b([A-Z][a-z]+)(?=\\s*,|\\s+(?:${castPattern}))`, 'g');
+  return [...text.matchAll(re)]
+    .map((m) => m[1])
+    .filter((w) => !isCastWord(w) && !NOT_NAMES.has(w.toLowerCase()));
+}
+
+function removeNames(text: string, names: string[]) {
+  return names
+    .reduce((t, name) => t.replace(new RegExp(`\\b${name}\\b,?\\s*`, 'g'), ''), text)
+    .trim();
+}
+
+// Explains what is wrong with a reply, or returns null when it is fine.
+function lineProblem(reply: string, earlier: string[]): string | null {
+  const strangers = unknownNames(reply);
+  if (strangers.length > 0) {
+    return `That reply used a name that is not in the office (${strangers.join(', ')}). Only ${CAST_NAMES.join(', ')} or the Manager exist; say it again without that name.`;
+  }
+  const tamil = tamilWords(reply);
+  if (tamil.length > 0) {
+    return `That reply used Tamil words (${tamil.join(', ')}). Say it again in Malayalam only, using negations like illa, allallo or illaanne.`;
+  }
+  if (isRepetition(reply, earlier)) {
+    return `That would repeat something already said ("${reply}"). Give a completely different reply with a fresh comeback.`;
+  }
+  return null;
+}
+
+// Generates one line, regenerating once if it breaks the dialect or repetition rules.
+async function generateLine(
+  messages: LLMMessage[],
+  names: string[],
+  stop: string[],
+  earlier: string[],
+): Promise<string> {
+  const { content } = await chatCompletion({ messages, ...CHAT_SAMPLING, stop });
+  const reply = cleanDialogue(content, names);
+  const problem = lineProblem(reply, earlier);
+  if (!problem) {
+    return reply;
+  }
+  const lastPrompt = messages[messages.length - 1].content;
+  const retry = await chatCompletion({
+    messages: [...messages.slice(0, -1), { role: 'user', content: `${problem}\n${lastPrompt}` }],
+    ...CHAT_SAMPLING,
+    stop,
   });
-  return trimContentPrefx(content, lastPrompt);
+  const fixed = replaceTamil(cleanDialogue(retry.content, names));
+  return removeNames(fixed, unknownNames(fixed));
+}
+
+const CHAT_SAMPLING = {
+  max_tokens: 120,
+  temperature: 0.9,
+  frequency_penalty: 0.8,
+  presence_penalty: 0.6,
+};
+
+// Strips speaker prefixes, stage directions and quotes, and keeps at most two sentences.
+export function cleanDialogue(content: string, names: string[]): string {
+  let text = content.trim();
+  const prefixes = names.flatMap((name) => names.map((other) => `${name} to ${other}:`));
+  prefixes.push(...names.map((name) => `${name}:`));
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const prefix of prefixes) {
+      if (text.toLowerCase().startsWith(prefix.toLowerCase())) {
+        text = text.slice(prefix.length).trim();
+        changed = true;
+      }
+    }
+  }
+  text = text
+    .replace(/\*[^*]*\*/g, ' ')
+    .replace(/\([^)]*\)|\[[^\]]*\]/g, ' ')
+    .replace(/["“”]/g, '')
+    .replace(/^'+|'+$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const sentences = text.match(/[^.!?]+[.!?]+|[^.!?]+$/g) ?? [text];
+  return sentences.slice(0, 2).join('').trim();
+}
+
+function wordSet(text: string) {
+  return new Set(text.toLowerCase().match(/[a-zഀ-ൿ]+/g) ?? []);
+}
+
+// True when `reply` mostly reuses the words of an earlier line in the chat.
+function isRepetition(reply: string, earlier: string[]) {
+  const words = wordSet(reply);
+  if (words.size === 0) return true;
+  return earlier.some((line) => {
+    const other = wordSet(line);
+    let shared = 0;
+    for (const w of words) if (other.has(w)) shared++;
+    return shared / Math.min(words.size, other.size || 1) >= 0.6;
+  });
 }
 
 function agentPrompts(

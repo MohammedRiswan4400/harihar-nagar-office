@@ -1,5 +1,6 @@
 import { v } from 'convex/values';
-import { internalAction } from '../_generated/server';
+import { internalAction, internalQuery } from '../_generated/server';
+import { ROUTINES } from '../../data/characters';
 import { WorldMap, serializedWorldMap } from './worldMap';
 import { rememberConversation } from '../agent/memory';
 import { GameId, agentId, conversationId, playerId } from './ids';
@@ -110,9 +111,15 @@ export const agentDoSomething = internalAction({
     const recentlyAttemptedInvite =
       agent.lastInviteAttempt && now < agent.lastInviteAttempt + CONVERSATION_COOLDOWN;
     const recentActivity = player.activity && now < player.activity.until + ACTIVITY_COOLDOWN;
-    // Decide whether to do an activity or wander somewhere.
+    const name = await ctx.runQuery(internal.aiTown.agentOperations.playerName, {
+      worldId: args.worldId,
+      playerId: player.id,
+    });
+    const routine = name ? ROUTINES[name] : undefined;
+    // Decide whether to do an activity or wander somewhere. Characters with a
+    // routine skip activities and keep walking their patrol route.
     if (!player.pathfinding) {
-      if (recentActivity || justLeftConversation) {
+      if (routine || recentActivity || justLeftConversation) {
         await sleep(Math.random() * 1000);
         await ctx.runMutation(api.aiTown.main.sendInput, {
           worldId: args.worldId,
@@ -120,7 +127,9 @@ export const agentDoSomething = internalAction({
           args: {
             operationId: args.operationId,
             agentId: agent.id,
-            destination: wanderDestination(map),
+            destination: routine
+              ? routine.patrol[Math.floor(Math.random() * routine.patrol.length)]
+              : wanderDestination(map),
           },
         });
         return;
@@ -166,6 +175,17 @@ export const agentDoSomething = internalAction({
         invitee,
       },
     });
+  },
+});
+
+export const playerName = internalQuery({
+  args: { worldId: v.id('worlds'), playerId },
+  handler: async (ctx, args) => {
+    const description = await ctx.db
+      .query('playerDescriptions')
+      .withIndex('worldId', (q) => q.eq('worldId', args.worldId).eq('playerId', args.playerId))
+      .first();
+    return description?.name ?? null;
   },
 });
 
